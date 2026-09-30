@@ -33,14 +33,16 @@ async function translateSearchQuery(query: string, mode: 'ingredient' | 'name') 
 
 export async function GET(request: NextRequest) {
   const mode = request.nextUrl.searchParams.get('mode') ?? 'ingredient';
+  const language = request.nextUrl.searchParams.get('language') ?? 'en';
   const query = (request.nextUrl.searchParams.get('query') ?? request.nextUrl.searchParams.get('ingredient') ?? '').trim();
   if (mode !== 'ingredient' && mode !== 'name') return NextResponse.json({ error: 'Neteisingas paieškos būdas.' }, { status: 400 });
+  if (language !== 'lt' && language !== 'en') return NextResponse.json({ error: 'Neteisingai pasirinkta paieškos kalba.' }, { status: 400 });
   if (!query || query.length > 80) return NextResponse.json({ error: 'Įveskite paieškos tekstą (iki 80 simbolių).' }, { status: 400 });
   try {
     const searchMode = mode as 'ingredient' | 'name';
-    const translatedQuery = await translateSearchQuery(query, searchMode);
+    const translatedQuery = language === 'lt' ? await translateSearchQuery(query, searchMode) : query;
     const meals = searchMode === 'name' ? await searchMealsByName(translatedQuery) : await searchMeals(translatedQuery);
-    return NextResponse.json({ meals, translatedQuery });
+    return NextResponse.json({ meals, translatedQuery, usedGemini: language === 'lt' });
   } catch (error) {
     if (error instanceof Error && error.message === 'GEMINI_KEY_MISSING') return NextResponse.json({ error: 'Lietuviškai paieškai trūksta Gemini API rakto.' }, { status: 503 });
     if (error instanceof ApiError && error.status === 429) return NextResponse.json({ error: 'Pasiektas Gemini užklausų limitas (429). Lietuviška paieška laikinai negalima – bandykite vėliau.' }, { status: 429 });
