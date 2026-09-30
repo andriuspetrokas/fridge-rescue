@@ -8,13 +8,27 @@ async function translateSearchQuery(query: string, mode: 'ingredient' | 'name') 
 
   const ai = new GoogleGenAI({ apiKey: key });
   const subject = mode === 'ingredient' ? 'ingredientą' : 'patiekalo pavadinimą';
-  const response = await ai.models.generateContent({
-    model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
-    contents: `Išversk pateiktą ${subject} į anglų kalbą, kad jį būtų galima naudoti TheMealDB paieškoje. Jei tekstas jau angliškas, palik jį angliškai. Grąžink tik vieną trumpą anglišką paieškos frazę be kabučių, paaiškinimų ir skyrybos ženklo pabaigoje. Vartotojo tekstas: ${JSON.stringify(query)}`,
-  });
-  const translated = response.text?.trim().replace(/^['"]|['"]$/g, '');
-  if (!translated || translated.length > 80 || /[\r\n]/.test(translated)) throw new Error('INVALID_TRANSLATION');
-  return translated;
+  const contents = `Išversk pateiktą ${subject} į anglų kalbą, kad jį būtų galima naudoti TheMealDB paieškoje. Jei tekstas jau angliškas, palik jį angliškai. Grąžink tik vieną trumpą anglišką paieškos frazę be kabučių, paaiškinimų ir skyrybos ženklo pabaigoje. Vartotojo tekstas: ${JSON.stringify(query)}`;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+        contents,
+      });
+      const translated = response.text?.trim().replace(/^['"]|['"]$/g, '');
+      if (!translated || translated.length > 80 || /[\r\n]/.test(translated)) throw new Error('INVALID_TRANSLATION');
+      return translated;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 503 && attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 2000 * 2 ** (attempt - 1)));
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error('TRANSLATION_UNAVAILABLE');
 }
 
 export async function GET(request: NextRequest) {
