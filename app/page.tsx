@@ -62,8 +62,9 @@ function authErrorMessage(error: AuthError): string {
 }
 
 export default function Home() {
-  const [query, setQuery] = useState('chicken');
+  const [query, setQuery] = useState('vištiena');
   const [searchMode, setSearchMode] = useState<'ingredient' | 'name'>('ingredient');
+  const [translatedQuery, setTranslatedQuery] = useState('');
   const searchInProgress = useRef(false);
   const [meals, setMeals] = useState<MealSummary[]>([]);
   const [selected, setSelected] = useState<Meal | null>(null);
@@ -147,12 +148,13 @@ export default function Home() {
     const term = query.trim();
     if (!term) { setMessage('Įveskite ingredientą arba patiekalo pavadinimą.'); setMeals([]); return; }
     searchInProgress.current = true;
-    setLoading('search'); setMessage(''); setMeals([]); setSelected(null); setAdaptation(''); setGeneratedRequest(null); setAiSaved(false);
+    setLoading('search'); setMessage(''); setMeals([]); setSelected(null); setAdaptation(''); setGeneratedRequest(null); setAiSaved(false); setTranslatedQuery('');
     try {
       const params = new URLSearchParams({ mode: searchMode, query: term });
-      const data = await readJson(await trackedFetch(`/api/meals?${params}`, undefined, { system: 'TheMealDB', path: 'Naršyklė → Fridge Rescue → TheMealDB' }, setLastOperation));
+      const data = await readJson(await trackedFetch(`/api/meals?${params}`, undefined, { system: 'Gemini + TheMealDB', path: 'Naršyklė → Fridge Rescue → Gemini → TheMealDB' }, setLastOperation));
       setMeals(data.meals);
-      if (!data.meals.length) setMessage('Receptų nerasta. Pabandykite kitą anglišką ingredientą arba patiekalo pavadinimą.');
+      setTranslatedQuery(data.translatedQuery);
+      if (!data.meals.length) setMessage(`Receptų pagal „${data.translatedQuery}“ nerasta. Pabandykite kitą ingredientą arba patiekalo pavadinimą.`);
     } catch (error) { setMessage((error as Error).message); }
     finally { searchInProgress.current = false; setLoading(''); }
   }
@@ -269,11 +271,12 @@ export default function Home() {
   return <main className="shell">
     <header className="topbar"><div className="brand"><span className="brand-icon">✳</span> Fridge Rescue</div><div className="top-actions"><span className="top-note">Mažiau švaistymo, daugiau idėjų</span>{developerModeAvailable && <label className="developer-toggle"><span>Developer Mode</span><input type="checkbox" checked={developerMode} onChange={toggleDeveloperMode}/><span className="toggle-track" aria-hidden="true"><span/></span></label>}</div></header>
     {developerMode && <section className="developer-panel" aria-live="polite"><div className="developer-panel-heading"><strong>Developer Mode</strong><span>Rodoma tik saugi paskutinės API operacijos informacija</span></div>{lastOperation ? <dl><div><dt>Sistema</dt><dd>{lastOperation.system}</dd></div><div><dt>Kelias</dt><dd>{lastOperation.path}</dd></div><div><dt>Endpoint</dt><dd><code>{lastOperation.endpoint}</code></dd></div><div><dt>HTTP metodas</dt><dd>{lastOperation.method}</dd></div><div><dt>HTTP statusas</dt><dd>{lastOperation.status ?? 'Tinklo klaida'}</dd></div><div><dt>Pavyko</dt><dd className={lastOperation.success ? 'developer-success' : 'developer-failure'}>{lastOperation.success ? 'Taip' : 'Ne'}</dd></div><div><dt>Trukmė</dt><dd>~{lastOperation.durationMs} ms</dd></div></dl> : <p>Atlikite paiešką ar kitą API veiksmą – čia bus parodyta jo informacija.</p>}</section>}
-    <section className="hero"><div className="eyebrow">RECEPTŲ PAIEŠKA IŠ TURIMŲ PRODUKTŲ</div><h1>Ką šiandien <em>gaminsime?</em></h1><p>Ieškokite pagal ingredientą arba patiekalo pavadinimą. TheMealDB geriausiai supranta angliškus žodžius, pavyzdžiui, <b>chicken</b>, <b>egg</b> ar <b>salmon</b>.</p>
-      <div className="search-modes" role="group" aria-label="Paieškos būdas"><button type="button" className={searchMode === 'ingredient' ? 'active' : ''} disabled={loading === 'search'} onClick={() => { setSearchMode('ingredient'); setQuery(''); setMessage(''); }}>Pagal ingredientą</button><button type="button" className={searchMode === 'name' ? 'active' : ''} disabled={loading === 'search'} onClick={() => { setSearchMode('name'); setQuery(''); setMessage(''); }}>Pagal pavadinimą</button></div>
-      <form className="search" onSubmit={search} noValidate><label className="sr-only" htmlFor="query">{searchMode === 'ingredient' ? 'Ingredientas' : 'Patiekalo pavadinimas'}</label><span className="search-icon">⌕</span><input id="query" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={searchMode === 'ingredient' ? 'Pvz., chicken' : 'Pvz., Arrabiata'} maxLength={80} disabled={loading === 'search'}/><button disabled={loading === 'search'}>{loading === 'search' ? 'Ieškoma...' : 'Ieškoti receptų →'}</button></form>
-      {loading === 'search' && <p className="search-status" role="status">Ieškome receptų TheMealDB duomenų bazėje...</p>}
-      <div className="chips"><span>Pabandykite:</span>{(searchMode === 'ingredient' ? ['chicken', 'egg', 'salmon'] : ['Arrabiata', 'Pasta', 'Curry']).map((item) => <button key={item} type="button" disabled={loading === 'search'} onClick={() => setQuery(item)}>{item}</button>)}</div>
+    <section className="hero"><div className="eyebrow">RECEPTŲ PAIEŠKA IŠ TURIMŲ PRODUKTŲ</div><h1>Ką šiandien <em>gaminsime?</em></h1><p>Rašykite ingredientą arba patiekalo pavadinimą lietuviškai. Gemini išvers paiešką į anglų kalbą, o TheMealDB suras atitinkamus receptus.</p>
+      <div className="search-modes" role="group" aria-label="Paieškos būdas"><button type="button" className={searchMode === 'ingredient' ? 'active' : ''} disabled={loading === 'search'} onClick={() => { setSearchMode('ingredient'); setQuery(''); setMessage(''); setTranslatedQuery(''); }}>Pagal ingredientą</button><button type="button" className={searchMode === 'name' ? 'active' : ''} disabled={loading === 'search'} onClick={() => { setSearchMode('name'); setQuery(''); setMessage(''); setTranslatedQuery(''); }}>Pagal pavadinimą</button></div>
+      <form className="search" onSubmit={search} noValidate><label className="sr-only" htmlFor="query">{searchMode === 'ingredient' ? 'Ingredientas' : 'Patiekalo pavadinimas'}</label><span className="search-icon">⌕</span><input id="query" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={searchMode === 'ingredient' ? 'Pvz., vištiena' : 'Pvz., vištienos karis'} maxLength={80} disabled={loading === 'search'}/><button disabled={loading === 'search'}>{loading === 'search' ? 'Verčiama ir ieškoma...' : 'Ieškoti receptų →'}</button></form>
+      {loading === 'search' && <p className="search-status" role="status">Gemini verčia užklausą, tada ieškome TheMealDB...</p>}
+      {translatedQuery && loading !== 'search' && <p className="search-translation">Gemini vertimas paieškai: <b>{translatedQuery}</b></p>}
+      <div className="chips"><span>Pabandykite:</span>{(searchMode === 'ingredient' ? ['vištiena', 'kiaušinis', 'lašiša'] : ['pica', 'makaronai', 'karis']).map((item) => <button key={item} type="button" disabled={loading === 'search'} onClick={() => setQuery(item)}>{item}</button>)}</div>
     </section>
     {message && <div className="notice" role="status">{message}</div>}
     <div className="content">
