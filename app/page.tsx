@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { AuthError, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
-import type { Meal, MealSummary, SavedAiRecipe, SavedMeal } from '@/lib/types';
+import type { KitchenItem, Meal, MealSummary, SavedAiRecipe, SavedMeal } from '@/lib/types';
 
 type AiRequest = { situation: string; minutes: 15 | 30 | 60; people: 1 | 2 | 4; goal: 'simpler' | 'cheaper' | 'healthier' | 'similar' };
 type DeveloperOperation = {
@@ -71,6 +71,8 @@ export default function Home() {
   const [selected, setSelected] = useState<Meal | null>(null);
   const [saved, setSaved] = useState<SavedMeal[]>([]);
   const [aiRecipes, setAiRecipes] = useState<SavedAiRecipe[]>([]);
+  const [kitchenItems, setKitchenItems] = useState<KitchenItem[]>([]);
+  const [kitchenInput, setKitchenInput] = useState('');
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -109,7 +111,7 @@ export default function Home() {
     const client = supabase();
     if (!client) return;
     client.auth.getUser().then(({ data }) => setUser(data.user));
-    const { data: listener } = client.auth.onAuthStateChange((_event, session) => { setUser(session?.user ?? null); if (!session) { setSaved([]); setAiRecipes([]); setAdaptation(''); setGeneratedRequest(null); } });
+    const { data: listener } = client.auth.onAuthStateChange((_event, session) => { setUser(session?.user ?? null); if (!session) { setSaved([]); setAiRecipes([]); setKitchenItems([]); setAdaptation(''); setGeneratedRequest(null); } });
     return () => listener.subscription.unsubscribe();
   }, []);
 
@@ -134,11 +136,19 @@ export default function Home() {
     } catch (error) { setMessage((error as Error).message); }
   }
 
+  async function loadKitchen() {
+    try {
+      const data = await readJson(await trackedFetch('/api/kitchen', { headers: await authHeaders() }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
+      setKitchenItems(data.items);
+    } catch (error) { setMessage((error as Error).message); }
+  }
+
   useEffect(() => {
     if (!user) return;
     const timer = window.setTimeout(() => {
       void loadSaved();
       void loadAiRecipes();
+      void loadKitchen();
     }, 0);
     return () => window.clearTimeout(timer);
   }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -243,12 +253,40 @@ export default function Home() {
     finally { setLoading(''); }
   }
 
+  async function addKitchenItem(event: FormEvent) {
+    event.preventDefault();
+    const name = kitchenInput.trim();
+    if (!name) { setMessage('Įveskite produkto pavadinimą.'); return; }
+    setLoading('kitchen'); setMessage('');
+    try {
+      const data = await readJson(await trackedFetch('/api/kitchen', {
+        method: 'POST',
+        headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
+      setKitchenItems((current) => [...current, data.item]);
+      setKitchenInput('');
+      setMessage('Produktas pridėtas į „Mano virtuvė“.');
+    } catch (error) { setMessage((error as Error).message); }
+    finally { setLoading(''); }
+  }
+
+  async function removeKitchenItem(id: string) {
+    setLoading('kitchen'); setMessage('');
+    try {
+      await readJson(await trackedFetch(`/api/kitchen?id=${encodeURIComponent(id)}`, { method: 'DELETE', headers: await authHeaders() }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
+      setKitchenItems((current) => current.filter((item) => item.id !== id));
+      setMessage('Produktas pašalintas iš „Mano virtuvė“.');
+    } catch (error) { setMessage((error as Error).message); }
+    finally { setLoading(''); }
+  }
+
   async function adapt(event: FormEvent) {
     event.preventDefault();
     if (!selected) return;
     setLoading('adapt'); setAdaptation(''); setGeneratedRequest(null); setAiSaved(false); setMessage('');
     try {
-      const data = await readJson(await trackedFetch('/api/adapt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mealId: selected.idMeal, situation, minutes, people, goal }) }, { system: 'Gemini', path: 'Naršyklė → Fridge Rescue → TheMealDB → Gemini' }, setLastOperation));
+      const data = await readJson(await trackedFetch('/api/adapt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mealId: selected.idMeal, situation, minutes, people, goal, kitchenItems: kitchenItems.map((item) => item.name) }) }, { system: 'Gemini', path: 'Naršyklė → Fridge Rescue → TheMealDB → Gemini' }, setLastOperation));
       setAdaptation(data.adaptation);
       setGeneratedRequest({ situation, minutes, people, goal });
     } catch (error) { setMessage((error as Error).message); }
@@ -285,7 +323,7 @@ export default function Home() {
     {message && <div className="notice" role="status">{message}</div>}
     <div className="content">
       <section className="main-column">
-        {selected ? <article className="detail"><button className="text-button" onClick={() => setSelected(null)}>← Atgal į receptus</button><img className="detail-image" src={selected.strMealThumb} alt={selected.strMeal}/><div className="detail-body"><div className="eyebrow">{selected.strArea || 'Pasaulio virtuvė'} · {selected.strCategory || 'Patiekalas'}</div><h2>{selected.strMeal}</h2><div className="detail-actions"><button className="primary" disabled={!user || loading === 'save'} onClick={toggleSaved}>{saved.some((item) => item.meal_id === selected.idMeal) ? '❤️ Išsaugota' : '❤️ Išsaugoti'}</button>{!user && <span>Norint išsaugoti, prisijunkite.</span>}</div><div className="recipe-grid"><div><h3>Ingredientai</h3><ul className="ingredients">{selected.ingredients.map((item, index) => <li key={index}><span>{item.name}</span><small>{item.measure}</small></li>)}</ul></div><div><h3>Gaminimas</h3><p className="instructions">{selected.strInstructions}</p>{selected.strYoutube?.startsWith('https://') && <a href={selected.strYoutube} target="_blank" rel="noreferrer">Žiūrėti vaizdo įrašą ↗</a>}</div></div><section className="ai-box"><div className="eyebrow">GEMINI AI</div><h3>Pritaikykite sau</h3><p>Ko trūksta, ką norite pakeisti ar kokių mitybos poreikių turite?</p><form onSubmit={adapt}>
+        {selected ? <article className="detail"><button className="text-button" onClick={() => setSelected(null)}>← Atgal į receptus</button><img className="detail-image" src={selected.strMealThumb} alt={selected.strMeal}/><div className="detail-body"><div className="eyebrow">{selected.strArea || 'Pasaulio virtuvė'} · {selected.strCategory || 'Patiekalas'}</div><h2>{selected.strMeal}</h2><div className="detail-actions"><button className="primary" disabled={!user || loading === 'save'} onClick={toggleSaved}>{saved.some((item) => item.meal_id === selected.idMeal) ? '❤️ Išsaugota' : '❤️ Išsaugoti'}</button>{!user && <span>Norint išsaugoti, prisijunkite.</span>}</div><div className="recipe-grid"><div><h3>Ingredientai</h3><ul className="ingredients">{selected.ingredients.map((item, index) => <li key={index}><span>{item.name}</span><small>{item.measure}</small></li>)}</ul></div><div><h3>Gaminimas</h3><p className="instructions">{selected.strInstructions}</p>{selected.strYoutube?.startsWith('https://') && <a href={selected.strYoutube} target="_blank" rel="noreferrer">Žiūrėti vaizdo įrašą ↗</a>}</div></div><section className="ai-box"><div className="eyebrow">GEMINI AI</div><h3>Pritaikykite sau</h3><p>Ko trūksta, ką norite pakeisti ar kokių mitybos poreikių turite?</p>{user && <p className="kitchen-context">Gemini taip pat gaus jūsų „Mano virtuvė“ sąrašą: <b>{kitchenItems.length ? kitchenItems.map((item) => item.name).join(', ') : 'sąrašas tuščias'}</b>.</p>}<form onSubmit={adapt}>
   <div className="ai-options">
     <label>Kiek laiko turiu?<select value={minutes} onChange={(e) => setMinutes(Number(e.target.value) as 15 | 30 | 60)}><option value={15}>15 min.</option><option value={30}>30 min.</option><option value={60}>60 min.</option></select></label>
     <label>Kiek žmonių?<select value={people} onChange={(e) => setPeople(Number(e.target.value) as 1 | 2 | 4)}><option value={1}>1 žmogui</option><option value={2}>2 žmonėms</option><option value={4}>4 žmonėms</option></select></label>
@@ -293,7 +331,7 @@ export default function Home() {
   </div>
   <label className="sr-only" htmlFor="situation">Jūsų situacija</label><textarea id="situation" value={situation} onChange={(e) => setSituation(e.target.value)} maxLength={500} required placeholder="Pvz., neturiu pieno ir noriu vegetariško varianto"/><button className="primary" disabled={loading === 'adapt'}>{loading === 'adapt' ? 'Pritaikoma...' : '✨ Pritaikyti receptą'}</button></form>{adaptation && <div className="adaptation"><h4>Jums pritaikytas variantas</h4><p>{adaptation}</p>{user ? <button type="button" className="primary" onClick={saveAiRecipe} disabled={loading === 'saveAi' || aiSaved}>{aiSaved ? '💾 Išsaugota' : loading === 'saveAi' ? 'Saugoma...' : '💾 Išsaugoti pritaikytą receptą'}</button> : <p className="muted">Prisijunkite, kad išsaugotumėte pritaikytą receptą.</p>}</div>}</section></div></article> : <><div className="section-heading"><div><div className="eyebrow">ATRASKITE KĄ GAMINTI</div><h2>Receptų idėjos</h2></div><span>{meals.length ? `${meals.length} receptų` : 'Pradėkite nuo paieškos'}</span></div><div className="cards">{meals.map((meal) => <button className="card" key={meal.idMeal} onClick={() => openMeal(meal.idMeal)}><img src={meal.strMealThumb} alt="" loading="lazy"/><div className="card-text"><span>THEMEALDB RECEPTAS</span><strong>{meal.strMeal}</strong><span className="meal-id">Recepto ID: {meal.idMeal}</span><span className="card-link">Peržiūrėti receptą →</span></div></button>)}</div>{!meals.length && loading !== 'search' && <div className="empty">🥕<h3>Jūsų skanus atradimas prasideda čia</h3><p>Įveskite ingredientą aukščiau ir paspauskite „Ieškoti receptų“.</p></div>}</>}
       </section>
-      <aside className="sidebar"><section className="panel"><div className="panel-icon">♡</div><h3>Mano virtuvė</h3>{configured ? user ? <><p className="muted">Prisijungta kaip <b>{user.email}</b></p><button className="text-button" onClick={signOut} disabled={loading === 'auth'}>Atsijungti →</button><div className="saved-list"><h4>Mano receptai ({saved.length})</h4>{saved.length ? saved.map((item) => <div className="saved-item" key={item.meal_id}><button className="saved-open" onClick={() => openMeal(item.meal_id)}><img src={item.meal_thumb} alt=""/><span>{item.meal_name}</span></button><button className="saved-remove" title="Pašalinti receptą" aria-label={`Pašalinti ${item.meal_name}`} disabled={loading === 'save'} onClick={() => removeSaved(item.meal_id)}>×</button></div>) : <p className="muted">Kol kas nieko neišsaugojote.</p>}</div></> : <><p className="muted">Prisijunkite ir išsaugokite patikusius receptus.</p><div className="auth-tabs"><button className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>Prisijungti</button><button className={authMode === 'signup' ? 'active' : ''} onClick={() => setAuthMode('signup')}>Registruotis</button></div><form className="auth-form" onSubmit={submitAuth} noValidate><label>El. paštas<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required/></label><label>Slaptažodis<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={6} required/></label><button className="primary" disabled={loading === 'auth'}>{authMode === 'login' ? 'Prisijungti' : 'Sukurti paskyrą'}</button></form></> : <p className="muted">Norėdami naudoti paskyras, įrašykite Supabase duomenis į <code>.env.local</code>.</p>}</section><section className="tip"><span>✦ MAŽAS PATARIMAS</span><p>Turite kelis produktus? Pradėkite nuo pagrindinio. Pasirinktą receptą vėliau galėsite pritaikyti su AI.</p></section></aside>
+      <aside className="sidebar"><section className="panel"><div className="panel-icon">♡</div><h3>Mano virtuvė</h3>{configured ? user ? <><p className="muted">Prisijungta kaip <b>{user.email}</b></p><button className="text-button" onClick={signOut} disabled={loading === 'auth'}>Atsijungti →</button><div className="kitchen-list"><h4>Turimi produktai ({kitchenItems.length})</h4><form className="kitchen-form" onSubmit={addKitchenItem}><label className="sr-only" htmlFor="kitchen-item">Produkto pavadinimas</label><input id="kitchen-item" value={kitchenInput} onChange={(event) => setKitchenInput(event.target.value)} placeholder="Pvz., kiaušiniai" maxLength={60} disabled={loading === 'kitchen'}/><button type="submit" aria-label="Pridėti produktą" disabled={loading === 'kitchen' || !kitchenInput.trim()}>+</button></form>{kitchenItems.length ? <ul>{kitchenItems.map((item) => <li key={item.id}><span>{item.name}</span><button type="button" aria-label={`Pašalinti ${item.name}`} title="Pašalinti produktą" disabled={loading === 'kitchen'} onClick={() => removeKitchenItem(item.id)}>×</button></li>)}</ul> : <p className="muted">Įrašykite produktus, kuriuos turite namuose.</p>}</div><div className="saved-list"><h4>Mano receptai ({saved.length})</h4>{saved.length ? saved.map((item) => <div className="saved-item" key={item.meal_id}><button className="saved-open" onClick={() => openMeal(item.meal_id)}><img src={item.meal_thumb} alt=""/><span>{item.meal_name}</span></button><button className="saved-remove" title="Pašalinti receptą" aria-label={`Pašalinti ${item.meal_name}`} disabled={loading === 'save'} onClick={() => removeSaved(item.meal_id)}>×</button></div>) : <p className="muted">Kol kas nieko neišsaugojote.</p>}</div></> : <><p className="muted">Prisijunkite, pridėkite turimus produktus ir išsaugokite receptus.</p><div className="auth-tabs"><button className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>Prisijungti</button><button className={authMode === 'signup' ? 'active' : ''} onClick={() => setAuthMode('signup')}>Registruotis</button></div><form className="auth-form" onSubmit={submitAuth} noValidate><label>El. paštas<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required/></label><label>Slaptažodis<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={6} required/></label><button className="primary" disabled={loading === 'auth'}>{authMode === 'login' ? 'Prisijungti' : 'Sukurti paskyrą'}</button></form></> : <p className="muted">Norėdami naudoti paskyras, įrašykite Supabase duomenis į <code>.env.local</code>.</p>}</section><section className="tip"><span>✦ MAŽAS PATARIMAS</span><p>„Mano virtuvė“ produktai automatiškai perduodami Gemini, kai pritaikote pasirinktą receptą.</p></section></aside>
     </div>
     {user && <section className="ai-library" aria-labelledby="ai-library-title"><div className="section-heading"><div><div className="eyebrow">JŪSŲ IŠSAUGOTI VARIANTAI</div><h2 id="ai-library-title">Mano AI receptai</h2></div><span>{aiRecipes.length} receptų</span></div>{aiRecipes.length ? <div className="ai-recipe-list">{aiRecipes.map((recipe) => <details key={recipe.id}><summary><strong>{recipe.original_meal_name}</strong><small>{new Date(recipe.created_at).toLocaleDateString('lt-LT')}</small></summary><div className="ai-recipe-content"><h3>Jūsų prašymas</h3><p>{recipe.user_request}</p><h3>Pritaikytas receptas</h3><p>{recipe.ai_result}</p></div></details>)}</div> : <p className="muted">Kol kas neišsaugojote AI pritaikytų receptų.</p>}</section>}
     <footer>Fridge Rescue · Receptai iš TheMealDB · Pritaikymas su Gemini</footer>

@@ -12,13 +12,16 @@ const goalLabels = {
 export async function POST(request: Request) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return NextResponse.json({ error: 'Gemini API raktas dar nenustatytas.' }, { status: 503 });
-  let body: { mealId?: unknown; situation?: unknown; minutes?: unknown; people?: unknown; goal?: unknown };
+  let body: { mealId?: unknown; situation?: unknown; minutes?: unknown; people?: unknown; goal?: unknown; kitchenItems?: unknown };
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Neteisinga užklausa.' }, { status: 400 }); }
   if (typeof body.mealId !== 'string' || !/^\d+$/.test(body.mealId) || typeof body.situation !== 'string' || !body.situation.trim() || body.situation.length > 500) {
     return NextResponse.json({ error: 'Pasirinkite receptą ir trumpai aprašykite savo situaciją.' }, { status: 400 });
   }
   if (typeof body.minutes !== 'number' || ![15, 30, 60].includes(body.minutes) || typeof body.people !== 'number' || ![1, 2, 4].includes(body.people) || typeof body.goal !== 'string' || !Object.hasOwn(goalLabels, body.goal)) {
     return NextResponse.json({ error: 'Pasirinkite laiką, žmonių skaičių ir pageidaujamą kryptį.' }, { status: 400 });
+  }
+  if (!Array.isArray(body.kitchenItems) || body.kitchenItems.length > 100 || !body.kitchenItems.every((item) => typeof item === 'string' && item.trim() && item.length <= 60)) {
+    return NextResponse.json({ error: 'Neteisingas „Mano virtuvė“ produktų sąrašas.' }, { status: 400 });
   }
   try {
     const meal = await getMeal(body.mealId);
@@ -32,12 +35,13 @@ Vartotojo sąlygos:
 - Žmonių skaičius: ${body.people}.
 - Pageidaujama kryptis: ${goalLabels[body.goal as keyof typeof goalLabels]}.
 - Papildomas prašymas: ${body.situation.trim()}
+- Vartotojo turimi „Mano virtuvė“ produktai: ${body.kitchenItems.length ? body.kitchenItems.map((item) => String(item).trim()).join(', ') : 'sąrašas tuščias'}
 
 Originalus receptas: ${meal.strMeal}
 Originalūs ingredientai: ${meal.ingredients.map((i) => `${i.measure} ${i.name}`).join(', ')}
 Originali gaminimo instrukcija: ${meal.strInstructions}
 
-Pateik tris aiškias dalis: „Pritaikyti ingredientai“, „Gaminimo žingsniai“ ir „Kas pakeista“. Ingredientų kiekius pritaikyk žmonių skaičiui, jei iš originalo galima nustatyti porcijas; kitu atveju nurodyk apytikslius kiekius. Gerbk turimo laiko ribą; jei net supaprastinus receptas užtruktų ilgiau, aiškiai tai pasakyk. Jei prašymas susijęs su alergijomis, perspėk patikrinti produktų etiketes.`;
+Pirmiausia palygink originalaus recepto ingredientus su „Mano virtuvė“ sąrašu, atsižvelgdamas į lietuviškus ir angliškus produktų pavadinimus. Pateik aiškias dalis: „Ką jau turite“, „Ko trūksta“, „Kuo galima pakeisti“, „Pritaikyti ingredientai“, „Gaminimo žingsniai“ ir „Kas pakeista“. Jei virtuvės sąrašas tuščias, taip ir parašyk. Ingredientų kiekius pritaikyk žmonių skaičiui, jei iš originalo galima nustatyti porcijas; kitu atveju nurodyk apytikslius kiekius. Gerbk turimo laiko ribą; jei net supaprastinus receptas užtruktų ilgiau, aiškiai tai pasakyk. Jei prašymas susijęs su alergijomis, perspėk patikrinti produktų etiketes.`;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const response = await ai.models.generateContent({

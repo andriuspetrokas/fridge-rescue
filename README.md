@@ -6,7 +6,7 @@ Mokomasis Next.js projektas: TheMealDB receptų paieška, Supabase paskyros ir i
 
 1. Įdiekite priklausomybes: `npm install`.
 2. Nukopijuokite `.env.example` į `.env.local` ir įrašykite savo Supabase projekto URL bei Publishable key. Gemini API raktą galėsite įrašyti vėliau, kai vykdysite AI užduotį. Gemini modelį galima pakeisti per `GEMINI_MODEL`.
-3. Supabase projekto SQL Editor paleiskite [supabase/schema.sql](supabase/schema.sql), tada [supabase/ai_recipes.sql](supabase/ai_recipes.sql). Jei pirmąjį failą jau paleidote anksčiau, vykdykite tik `ai_recipes.sql`. Supabase Auth nustatymuose įjunkite el. pašto registraciją; jei reikia, nustatykite patvirtinimo laiškų siuntimą.
+3. Supabase projekto SQL Editor paleiskite [supabase/schema.sql](supabase/schema.sql), [supabase/ai_recipes.sql](supabase/ai_recipes.sql) ir [supabase/kitchen.sql](supabase/kitchen.sql). Jau vykdytų failų kartoti nereikia. Supabase Auth nustatymuose įjunkite el. pašto registraciją; jei reikia, nustatykite patvirtinimo laiškų siuntimą.
 4. Paleiskite `npm run dev` ir atidarykite `http://localhost:3000`.
 
 Be Supabase ir Gemini raktų veiks TheMealDB paieška ir recepto peržiūra. Registracijai, išsaugojimui ir AI pritaikymui reikia atitinkamų paslaugų raktų.
