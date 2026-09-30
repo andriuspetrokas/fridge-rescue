@@ -1,29 +1,28 @@
-﻿'use client';
+'use client';
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { AuthError, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import type { KitchenItem, Meal, MealSummary, SavedAiRecipe, SavedMeal } from '@/lib/types';
+import { AiRecipeLibrary } from './components/AiRecipeLibrary';
+import { DeveloperPanel, type DeveloperOperation } from './components/DeveloperPanel';
+import { KitchenSidebar } from './components/KitchenSidebar';
+import { NoticeBanner, type Notice } from './components/NoticeBanner';
+import { RecipeDetails } from './components/RecipeDetails';
+import { SearchSection } from './components/SearchSection';
 
 type AiRequest = { situation: string; minutes: 15 | 30 | 60; people: 1 | 2 | 4; goal: 'simpler' | 'cheaper' | 'healthier' | 'similar' };
-type DeveloperOperation = {
-  system: string;
-  path: string;
-  endpoint: string;
-  method: string;
-  status: number | null;
-  success: boolean;
-  durationMs: number;
-};
+type LoadingKey = 'search' | 'meal' | 'auth' | 'saved' | 'kitchen' | 'adapt' | 'saveAi';
+type LoadingState = Record<LoadingKey, boolean>;
 
 const developerModeAvailable = process.env.NEXT_PUBLIC_DEVELOPER_MODE !== 'false';
+const initialLoading: LoadingState = { search: false, meal: false, auth: false, saved: false, kitchen: false, adapt: false, saveAi: false };
 
-async function trackedFetch(
-  endpoint: string,
-  init: RequestInit | undefined,
-  meta: Pick<DeveloperOperation, 'system' | 'path'>,
-  report: (operation: DeveloperOperation) => void,
-) {
+class ApiResponseError extends Error {
+  constructor(message: string, readonly status: number) { super(message); }
+}
+
+async function trackedFetch(endpoint: string, init: RequestInit | undefined, meta: Pick<DeveloperOperation, 'system' | 'path'>, report: (operation: DeveloperOperation) => void) {
   const startedAt = performance.now();
   const method = init?.method?.toUpperCase() ?? 'GET';
   try {
@@ -38,26 +37,20 @@ async function trackedFetch(
 
 async function readJson(response: Response) {
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || 'Įvyko klaida.');
+  if (!response.ok) throw new ApiResponseError(data.error || 'Įvyko klaida.', response.status);
   return data;
 }
 
 function authErrorMessage(error: AuthError): string {
   switch (error.code) {
-    case 'weak_password':
-      return 'Slaptažodis neatitinka Supabase nustatytų saugumo reikalavimų. Pasirinkite ilgesnį ir stipresnį slaptažodį.';
+    case 'weak_password': return 'Slaptažodis neatitinka Supabase saugumo reikalavimų.';
     case 'user_already_exists':
-    case 'email_exists':
-      return 'Šis el. pašto adresas jau užregistruotas. Pabandykite prisijungti.';
-    case 'invalid_credentials':
-      return 'Neteisingas el. paštas arba slaptažodis.';
-    case 'email_not_confirmed':
-      return 'Pirmiausia patvirtinkite el. paštą, tada prisijunkite.';
+    case 'email_exists': return 'Šis el. pašto adresas jau užregistruotas. Pabandykite prisijungti.';
+    case 'invalid_credentials': return 'Neteisingas el. paštas arba slaptažodis.';
+    case 'email_not_confirmed': return 'Pirmiausia patvirtinkite el. paštą, tada prisijunkite.';
     case 'signup_disabled':
-    case 'email_provider_disabled':
-      return 'Registracija el. paštu šiame Supabase projekte išjungta.';
-    default:
-      return `Nepavyko prisijungti arba užsiregistruoti: ${error.message}`;
+    case 'email_provider_disabled': return 'Registracija el. paštu šiame Supabase projekte išjungta.';
+    default: return `Nepavyko prisijungti arba užsiregistruoti: ${error.message}`;
   }
 }
 
@@ -84,19 +77,36 @@ export default function Home() {
   const [adaptation, setAdaptation] = useState('');
   const [generatedRequest, setGeneratedRequest] = useState<AiRequest | null>(null);
   const [aiSaved, setAiSaved] = useState(false);
-  const [loading, setLoading] = useState('');
-  const [message, setMessage] = useState('');
+  const [deletingAiId, setDeletingAiId] = useState('');
+  const [loading, setLoading] = useState<LoadingState>(initialLoading);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [searchFallback, setSearchFallback] = useState(false);
   const [developerMode, setDeveloperMode] = useState(false);
   const [lastOperation, setLastOperation] = useState<DeveloperOperation | null>(null);
   const configured = !!supabase();
 
+  function setBusy(key: LoadingKey, value: boolean) { setLoading((current) => ({ ...current, [key]: value })); }
+  function notify(text: string, kind: Notice['kind'] = 'error') { setNotice({ text, kind }); }
+  function clearNotice() { setNotice(null); setSearchFallback(false); }
+
   useEffect(() => {
     if (!developerModeAvailable) return;
     const timer = window.setTimeout(() => {
-      const savedPreference = window.localStorage.getItem('fridge-rescue-developer-mode');
-      setDeveloperMode(savedPreference === null ? true : savedPreference === 'true');
+      const preference = window.localStorage.getItem('fridge-rescue-developer-mode');
+      setDeveloperMode(preference === null ? true : preference === 'true');
     }, 0);
     return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const client = supabase();
+    if (!client) return;
+    client.auth.getUser().then(({ data }) => setUser(data.user));
+    const { data: listener } = client.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      if (!session) { setSaved([]); setAiRecipes([]); setKitchenItems([]); setAdaptation(''); setGeneratedRequest(null); }
+    });
+    return () => listener.subscription.unsubscribe();
   }, []);
 
   function toggleDeveloperMode() {
@@ -107,14 +117,6 @@ export default function Home() {
     });
   }
 
-  useEffect(() => {
-    const client = supabase();
-    if (!client) return;
-    client.auth.getUser().then(({ data }) => setUser(data.user));
-    const { data: listener } = client.auth.onAuthStateChange((_event, session) => { setUser(session?.user ?? null); if (!session) { setSaved([]); setAiRecipes([]); setKitchenItems([]); setAdaptation(''); setGeneratedRequest(null); } });
-    return () => listener.subscription.unsubscribe();
-  }, []);
-
   async function authHeaders(): Promise<HeadersInit> {
     const client = supabase();
     const { data } = client ? await client.auth.getSession() : { data: { session: null } };
@@ -123,33 +125,33 @@ export default function Home() {
   }
 
   async function loadSaved() {
+    setBusy('saved', true);
     try {
       const data = await readJson(await trackedFetch('/api/saved', { headers: await authHeaders() }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
       setSaved(data.meals);
-    } catch (error) { setMessage((error as Error).message); }
+    } catch (error) { notify((error as Error).message); }
+    finally { setBusy('saved', false); }
   }
 
   async function loadAiRecipes() {
     try {
       const data = await readJson(await trackedFetch('/api/ai-recipes', { headers: await authHeaders() }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
       setAiRecipes(data.recipes);
-    } catch (error) { setMessage((error as Error).message); }
+    } catch (error) { notify((error as Error).message); }
   }
 
   async function loadKitchen() {
+    setBusy('kitchen', true);
     try {
       const data = await readJson(await trackedFetch('/api/kitchen', { headers: await authHeaders() }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
       setKitchenItems(data.items);
-    } catch (error) { setMessage((error as Error).message); }
+    } catch (error) { notify((error as Error).message); }
+    finally { setBusy('kitchen', false); }
   }
 
   useEffect(() => {
     if (!user) return;
-    const timer = window.setTimeout(() => {
-      void loadSaved();
-      void loadAiRecipes();
-      void loadKitchen();
-    }, 0);
+    const timer = window.setTimeout(() => { void loadSaved(); void loadAiRecipes(); void loadKitchen(); }, 0);
     return () => window.clearTimeout(timer);
   }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -157,183 +159,140 @@ export default function Home() {
     event?.preventDefault();
     if (searchInProgress.current) return;
     const term = query.trim();
-    if (!term) { setMessage('Įveskite ingredientą arba patiekalo pavadinimą.'); setMeals([]); return; }
+    if (!term) { notify('Įveskite ingredientą arba patiekalo pavadinimą.', 'warning'); setMeals([]); return; }
     searchInProgress.current = true;
-    setLoading('search'); setMessage(''); setMeals([]); setSelected(null); setAdaptation(''); setGeneratedRequest(null); setAiSaved(false); setTranslatedQuery('');
+    setBusy('search', true); clearNotice(); setMeals([]); setSelected(null); setAdaptation(''); setGeneratedRequest(null); setAiSaved(false); setTranslatedQuery('');
     try {
       const params = new URLSearchParams({ mode: searchMode, language: searchLanguage, query: term });
-      const data = await readJson(await trackedFetch(`/api/meals?${params}`, undefined, searchLanguage === 'lt'
-        ? { system: 'Gemini + TheMealDB', path: 'Naršyklė → Fridge Rescue → Gemini → TheMealDB' }
-        : { system: 'TheMealDB', path: 'Naršyklė → Fridge Rescue → TheMealDB' }, setLastOperation));
-      setMeals(data.meals);
-      setTranslatedQuery(data.translatedQuery);
-      if (!data.meals.length) setMessage(`Receptų pagal „${data.translatedQuery}“ nerasta. Pabandykite kitą ingredientą arba patiekalo pavadinimą.`);
-    } catch (error) { setMessage((error as Error).message); }
-    finally { searchInProgress.current = false; setLoading(''); }
+      const meta = searchLanguage === 'lt' ? { system: 'Gemini + TheMealDB', path: 'Naršyklė → Fridge Rescue → Gemini → TheMealDB' } : { system: 'TheMealDB', path: 'Naršyklė → Fridge Rescue → TheMealDB' };
+      const data = await readJson(await trackedFetch(`/api/meals?${params}`, undefined, meta, setLastOperation));
+      setMeals(data.meals); setTranslatedQuery(data.translatedQuery);
+      if (!data.meals.length) notify(`Receptų pagal „${data.translatedQuery}“ nerasta. Pabandykite kitą paiešką.`, 'warning');
+    } catch (error) {
+      notify((error as Error).message);
+      if (searchLanguage === 'lt' && error instanceof ApiResponseError && [429, 503].includes(error.status)) setSearchFallback(true);
+    } finally { searchInProgress.current = false; setBusy('search', false); }
   }
 
+  function switchToEnglish() { setSearchLanguage('en'); setQuery(''); setTranslatedQuery(''); setSearchFallback(false); notify('Įveskite anglišką ingredientą arba patiekalo pavadinimą.', 'info'); }
+
   async function openMeal(id: string) {
-    setLoading('meal'); setMessage(''); setAdaptation(''); setGeneratedRequest(null); setAiSaved(false);
+    setBusy('meal', true); clearNotice(); setAdaptation(''); setGeneratedRequest(null); setAiSaved(false);
     try {
       const data = await readJson(await trackedFetch(`/api/meals/${id}`, undefined, { system: 'TheMealDB', path: 'Naršyklė → Fridge Rescue → TheMealDB' }, setLastOperation));
-      setSelected(data.meal);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    } catch (error) { setMessage((error as Error).message); }
-    finally { setLoading(''); }
+      setSelected(data.meal); window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (error) { notify((error as Error).message); }
+    finally { setBusy('meal', false); }
   }
 
   async function submitAuth(event: FormEvent) {
-    event.preventDefault();
-    const client = supabase();
-    if (!client) return;
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { setMessage('Įveskite tinkamą el. pašto adresą.'); return; }
-    if (password.length < 6) { setMessage('Slaptažodis turi būti bent 6 simbolių.'); return; }
-    setLoading('auth'); setMessage('');
-    const startedAt = performance.now();
-    const authEndpoint = authMode === 'login' ? '/auth/v1/token' : '/auth/v1/signup';
+    event.preventDefault(); const client = supabase(); if (!client) return;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { notify('Įveskite tinkamą el. pašto adresą.', 'warning'); return; }
+    if (password.length < 6) { notify('Slaptažodis turi būti bent 6 simbolių.', 'warning'); return; }
+    setBusy('auth', true); clearNotice(); const startedAt = performance.now(); const endpoint = authMode === 'login' ? '/auth/v1/token' : '/auth/v1/signup';
     try {
-      const result = authMode === 'login'
-        ? await client.auth.signInWithPassword({ email: email.trim(), password })
-        : await client.auth.signUp({ email: email.trim(), password, options: { emailRedirectTo: window.location.origin } });
-      setLastOperation({ system: 'Supabase Auth', path: 'Naršyklė → Supabase', endpoint: authEndpoint, method: 'POST', status: result.error?.status ?? 200, success: !result.error, durationMs: Math.round(performance.now() - startedAt) });
-      if (result.error) { setMessage(authErrorMessage(result.error)); return; }
-      setPassword('');
-      setMessage(authMode === 'signup' && !result.data.session
-        ? 'Jei reikia patvirtinimo, patikrinkite el. paštą ir paspauskite laiške esančią nuorodą. Tada prisijunkite. Jei paskyrą jau turite, pasirinkite „Prisijungti“.'
-        : 'Prisijungta sėkmingai.');
-    } catch {
-      setLastOperation({ system: 'Supabase Auth', path: 'Naršyklė → Supabase', endpoint: authEndpoint, method: 'POST', status: null, success: false, durationMs: Math.round(performance.now() - startedAt) });
-      setMessage('Nepavyko susisiekti su Supabase. Patikrinkite ryšį ir bandykite dar kartą.');
-    }
-    finally { setLoading(''); }
+      const result = authMode === 'login' ? await client.auth.signInWithPassword({ email: email.trim(), password }) : await client.auth.signUp({ email: email.trim(), password, options: { emailRedirectTo: window.location.origin } });
+      setLastOperation({ system: 'Supabase Auth', path: 'Naršyklė → Supabase', endpoint, method: 'POST', status: result.error?.status ?? 200, success: !result.error, durationMs: Math.round(performance.now() - startedAt) });
+      if (result.error) { notify(authErrorMessage(result.error)); return; }
+      setPassword(''); notify(authMode === 'signup' && !result.data.session ? 'Patikrinkite el. paštą, patvirtinkite paskyrą ir tada prisijunkite.' : 'Prisijungta sėkmingai.', 'success');
+    } catch { notify('Nepavyko susisiekti su Supabase. Patikrinkite ryšį.'); }
+    finally { setBusy('auth', false); }
   }
 
   async function signOut() {
-    const client = supabase();
-    if (!client) return;
-    setLoading('auth'); setMessage('');
-    const startedAt = performance.now();
+    const client = supabase(); if (!client) return;
+    setBusy('auth', true); clearNotice(); const startedAt = performance.now();
     try {
       const { error } = await client.auth.signOut();
       setLastOperation({ system: 'Supabase Auth', path: 'Naršyklė → Supabase', endpoint: '/auth/v1/logout', method: 'POST', status: error?.status ?? 200, success: !error, durationMs: Math.round(performance.now() - startedAt) });
-      setMessage(error ? authErrorMessage(error) : 'Atsijungta.');
-    } catch {
-      setLastOperation({ system: 'Supabase Auth', path: 'Naršyklė → Supabase', endpoint: '/auth/v1/logout', method: 'POST', status: null, success: false, durationMs: Math.round(performance.now() - startedAt) });
-      setMessage('Nepavyko atsijungti. Bandykite dar kartą.');
-    }
-    finally { setLoading(''); }
+      if (error) notify(authErrorMessage(error)); else notify('Atsijungta.', 'success');
+    } catch { notify('Nepavyko atsijungti. Bandykite dar kartą.'); }
+    finally { setBusy('auth', false); }
   }
 
   async function toggleSaved() {
     if (!selected) return;
-    setLoading('save'); setMessage('');
-    const isSaved = saved.some((item) => item.meal_id === selected.idMeal);
+    setBusy('saved', true); clearNotice(); const isSaved = saved.some((item) => item.meal_id === selected.idMeal);
     try {
-      await readJson(await trackedFetch(isSaved ? `/api/saved?mealId=${selected.idMeal}` : '/api/saved', {
-        method: isSaved ? 'DELETE' : 'POST',
-        headers: { ...(await authHeaders()), ...(!isSaved ? { 'Content-Type': 'application/json' } : {}) },
-        ...(!isSaved ? { body: JSON.stringify({ mealId: selected.idMeal }) } : {}),
-      }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
-      await loadSaved();
-      setMessage(isSaved ? 'Receptas pašalintas iš išsaugotų.' : 'Receptas išsaugotas.');
-    } catch (error) { setMessage((error as Error).message); }
-    finally { setLoading(''); }
+      await readJson(await trackedFetch(isSaved ? `/api/saved?mealId=${selected.idMeal}` : '/api/saved', { method: isSaved ? 'DELETE' : 'POST', headers: { ...(await authHeaders()), ...(!isSaved ? { 'Content-Type': 'application/json' } : {}) }, ...(!isSaved ? { body: JSON.stringify({ mealId: selected.idMeal }) } : {}) }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
+      if (isSaved) setSaved((current) => current.filter((item) => item.meal_id !== selected.idMeal)); else await loadSaved();
+      notify(isSaved ? 'Receptas pašalintas iš išsaugotų.' : 'Receptas išsaugotas.', 'success');
+    } catch (error) { notify((error as Error).message); }
+    finally { setBusy('saved', false); }
   }
 
   async function removeSaved(mealId: string) {
-    setLoading('save'); setMessage('');
+    setBusy('saved', true); clearNotice();
     try {
-      await readJson(await trackedFetch(`/api/saved?mealId=${encodeURIComponent(mealId)}`, {
-        method: 'DELETE',
-        headers: await authHeaders(),
-      }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
-      setSaved((current) => current.filter((item) => item.meal_id !== mealId));
-      setMessage('Receptas pašalintas iš „Mano receptai“.');
-    } catch (error) { setMessage((error as Error).message); }
-    finally { setLoading(''); }
+      await readJson(await trackedFetch(`/api/saved?mealId=${encodeURIComponent(mealId)}`, { method: 'DELETE', headers: await authHeaders() }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
+      setSaved((current) => current.filter((item) => item.meal_id !== mealId)); notify('Receptas pašalintas iš „Mano receptai“.', 'success');
+    } catch (error) { notify((error as Error).message); }
+    finally { setBusy('saved', false); }
   }
 
   async function addKitchenItem(event: FormEvent) {
-    event.preventDefault();
-    const name = kitchenInput.trim();
-    if (!name) { setMessage('Įveskite produkto pavadinimą.'); return; }
-    setLoading('kitchen'); setMessage('');
+    event.preventDefault(); const name = kitchenInput.trim();
+    if (!name) { notify('Įveskite produkto pavadinimą.', 'warning'); return; }
+    setBusy('kitchen', true); clearNotice();
     try {
-      const data = await readJson(await trackedFetch('/api/kitchen', {
-        method: 'POST',
-        headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
-      setKitchenItems((current) => [...current, data.item]);
-      setKitchenInput('');
-      setMessage('Produktas pridėtas į „Mano virtuvė“.');
-    } catch (error) { setMessage((error as Error).message); }
-    finally { setLoading(''); }
+      const data = await readJson(await trackedFetch('/api/kitchen', { method: 'POST', headers: { ...(await authHeaders()), 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
+      setKitchenItems((current) => [...current, data.item]); setKitchenInput(''); notify('Produktas pridėtas į „Mano virtuvė“.', 'success');
+    } catch (error) { notify((error as Error).message); }
+    finally { setBusy('kitchen', false); }
   }
 
   async function removeKitchenItem(id: string) {
-    setLoading('kitchen'); setMessage('');
+    setBusy('kitchen', true); clearNotice();
     try {
       await readJson(await trackedFetch(`/api/kitchen?id=${encodeURIComponent(id)}`, { method: 'DELETE', headers: await authHeaders() }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
-      setKitchenItems((current) => current.filter((item) => item.id !== id));
-      setMessage('Produktas pašalintas iš „Mano virtuvė“.');
-    } catch (error) { setMessage((error as Error).message); }
-    finally { setLoading(''); }
+      setKitchenItems((current) => current.filter((item) => item.id !== id)); notify('Produktas pašalintas iš „Mano virtuvė“.', 'success');
+    } catch (error) { notify((error as Error).message); }
+    finally { setBusy('kitchen', false); }
   }
 
   async function adapt(event: FormEvent) {
-    event.preventDefault();
-    if (!selected) return;
-    setLoading('adapt'); setAdaptation(''); setGeneratedRequest(null); setAiSaved(false); setMessage('');
+    event.preventDefault(); if (!selected) return;
+    setBusy('adapt', true); setAdaptation(''); setGeneratedRequest(null); setAiSaved(false); clearNotice();
     try {
-      const data = await readJson(await trackedFetch('/api/adapt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mealId: selected.idMeal, situation, minutes, people, goal, kitchenItems: kitchenItems.map((item) => item.name) }) }, { system: 'Gemini', path: 'Naršyklė → Fridge Rescue → TheMealDB → Gemini' }, setLastOperation));
-      setAdaptation(data.adaptation);
-      setGeneratedRequest({ situation, minutes, people, goal });
-    } catch (error) { setMessage((error as Error).message); }
-    finally { setLoading(''); }
+      const headers = { 'Content-Type': 'application/json', ...(user ? await authHeaders() : {}) };
+      const data = await readJson(await trackedFetch('/api/adapt', { method: 'POST', headers, body: JSON.stringify({ mealId: selected.idMeal, situation, minutes, people, goal }) }, { system: user ? 'Supabase + Gemini' : 'Gemini', path: user ? 'Naršyklė → Fridge Rescue → Supabase → TheMealDB → Gemini' : 'Naršyklė → Fridge Rescue → TheMealDB → Gemini' }, setLastOperation));
+      setAdaptation(data.adaptation); setGeneratedRequest({ situation, minutes, people, goal });
+    } catch (error) { notify((error as Error).message); }
+    finally { setBusy('adapt', false); }
   }
 
   async function saveAiRecipe() {
-    if (!user || !selected || !adaptation || !generatedRequest || aiSaved || loading === 'saveAi') return;
-    setLoading('saveAi'); setMessage('');
+    if (!user || !selected || !adaptation || !generatedRequest || aiSaved || loading.saveAi) return;
+    setBusy('saveAi', true); clearNotice();
     try {
-      const data = await readJson(await trackedFetch('/api/ai-recipes', {
-        method: 'POST',
-        headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mealId: selected.idMeal, mealName: selected.strMeal, ...generatedRequest, aiResult: adaptation }),
-      }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
-      setAiRecipes((current) => [data.recipe, ...current]);
-      setAiSaved(true);
-      setMessage('Pritaikytas receptas išsaugotas skiltyje „Mano AI receptai“.');
-    } catch (error) { setMessage((error as Error).message); }
-    finally { setLoading(''); }
+      const data = await readJson(await trackedFetch('/api/ai-recipes', { method: 'POST', headers: { ...(await authHeaders()), 'Content-Type': 'application/json' }, body: JSON.stringify({ mealId: selected.idMeal, mealName: selected.strMeal, ...generatedRequest, aiResult: adaptation }) }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
+      setAiRecipes((current) => [data.recipe, ...current]); setAiSaved(true); notify('Pritaikytas receptas išsaugotas.', 'success');
+    } catch (error) { notify((error as Error).message); }
+    finally { setBusy('saveAi', false); }
   }
+
+  async function removeAiRecipe(id: string) {
+    setDeletingAiId(id); clearNotice();
+    try {
+      await readJson(await trackedFetch(`/api/ai-recipes?id=${encodeURIComponent(id)}`, { method: 'DELETE', headers: await authHeaders() }, { system: 'Supabase', path: 'Naršyklė → Fridge Rescue → Supabase' }, setLastOperation));
+      setAiRecipes((current) => current.filter((recipe) => recipe.id !== id)); notify('AI receptas pašalintas.', 'success');
+    } catch (error) { notify((error as Error).message); }
+    finally { setDeletingAiId(''); }
+  }
+
+  function changeLanguage(value: 'en' | 'lt') { setSearchLanguage(value); setQuery(''); clearNotice(); setTranslatedQuery(''); }
+  function changeMode(value: 'ingredient' | 'name') { setSearchMode(value); setQuery(''); clearNotice(); setTranslatedQuery(''); }
 
   return <main className="shell">
     <header className="topbar"><div className="brand"><span className="brand-icon">✳</span> Fridge Rescue</div><div className="top-actions"><span className="top-note">Mažiau švaistymo, daugiau idėjų</span>{developerModeAvailable && <label className="developer-toggle"><span>Developer Mode</span><input type="checkbox" checked={developerMode} onChange={toggleDeveloperMode}/><span className="toggle-track" aria-hidden="true"><span/></span></label>}</div></header>
-    {developerMode && <section className="developer-panel" aria-live="polite"><div className="developer-panel-heading"><strong>Developer Mode</strong><span>Rodoma tik saugi paskutinės API operacijos informacija</span></div>{lastOperation ? <dl><div><dt>Sistema</dt><dd>{lastOperation.system}</dd></div><div><dt>Kelias</dt><dd>{lastOperation.path}</dd></div><div><dt>Endpoint</dt><dd><code>{lastOperation.endpoint}</code></dd></div><div><dt>HTTP metodas</dt><dd>{lastOperation.method}</dd></div><div><dt>HTTP statusas</dt><dd>{lastOperation.status ?? 'Tinklo klaida'}</dd></div><div><dt>Pavyko</dt><dd className={lastOperation.success ? 'developer-success' : 'developer-failure'}>{lastOperation.success ? 'Taip' : 'Ne'}</dd></div><div><dt>Trukmė</dt><dd>~{lastOperation.durationMs} ms</dd></div></dl> : <p>Atlikite paiešką ar kitą API veiksmą – čia bus parodyta jo informacija.</p>}</section>}
-    <section className="hero"><div className="eyebrow">RECEPTŲ PAIEŠKA IŠ TURIMŲ PRODUKTŲ</div><h1>Ką šiandien <em>gaminsime?</em></h1><p>Ieškokite tiesiogiai anglų kalba arba pasirinkite lietuvišką paiešką – tuomet Gemini išvers užklausą, o TheMealDB suras receptus.</p>
-      <div className="search-languages" role="group" aria-label="Paieškos kalba"><button type="button" className={searchLanguage === 'en' ? 'active' : ''} disabled={loading === 'search'} onClick={() => { setSearchLanguage('en'); setQuery(''); setMessage(''); setTranslatedQuery(''); }}>English · tiesiogiai</button><button type="button" className={searchLanguage === 'lt' ? 'active' : ''} disabled={loading === 'search'} onClick={() => { setSearchLanguage('lt'); setQuery(''); setMessage(''); setTranslatedQuery(''); }}>Lietuvių · su Gemini</button></div>
-      <div className="search-modes" role="group" aria-label="Paieškos būdas"><button type="button" className={searchMode === 'ingredient' ? 'active' : ''} disabled={loading === 'search'} onClick={() => { setSearchMode('ingredient'); setQuery(''); setMessage(''); setTranslatedQuery(''); }}>Pagal ingredientą</button><button type="button" className={searchMode === 'name' ? 'active' : ''} disabled={loading === 'search'} onClick={() => { setSearchMode('name'); setQuery(''); setMessage(''); setTranslatedQuery(''); }}>Pagal pavadinimą</button></div>
-      <form className="search" onSubmit={search} noValidate><label className="sr-only" htmlFor="query">{searchMode === 'ingredient' ? 'Ingredientas' : 'Patiekalo pavadinimas'}</label><span className="search-icon">⌕</span><input id="query" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={searchMode === 'ingredient' ? (searchLanguage === 'lt' ? 'Pvz., vištiena' : 'Pvz., chicken') : (searchLanguage === 'lt' ? 'Pvz., vištienos karis' : 'Pvz., chicken curry')} maxLength={80} disabled={loading === 'search'}/><button disabled={loading === 'search'}>{loading === 'search' ? (searchLanguage === 'lt' ? 'Verčiama ir ieškoma...' : 'Ieškoma...') : 'Ieškoti receptų →'}</button></form>
-      {loading === 'search' && <p className="search-status" role="status">{searchLanguage === 'lt' ? 'Gemini verčia užklausą, tada ieškome TheMealDB...' : 'Ieškome receptų TheMealDB duomenų bazėje...'}</p>}
-      {searchLanguage === 'lt' && translatedQuery && loading !== 'search' && <p className="search-translation">Gemini vertimas paieškai: <b>{translatedQuery}</b></p>}
-      <div className="chips"><span>Pabandykite:</span>{(searchLanguage === 'lt' ? (searchMode === 'ingredient' ? ['vištiena', 'kiaušinis', 'lašiša'] : ['pica', 'makaronai', 'karis']) : (searchMode === 'ingredient' ? ['chicken', 'egg', 'salmon'] : ['Arrabiata', 'Pasta', 'Curry'])).map((item) => <button key={item} type="button" disabled={loading === 'search'} onClick={() => setQuery(item)}>{item}</button>)}</div>
-    </section>
-    {message && <div className="notice" role="status">{message}</div>}
-    <div className="content">
-      <section className="main-column">
-        {selected ? <article className="detail"><button className="text-button" onClick={() => setSelected(null)}>← Atgal į receptus</button><img className="detail-image" src={selected.strMealThumb} alt={selected.strMeal}/><div className="detail-body"><div className="eyebrow">{selected.strArea || 'Pasaulio virtuvė'} · {selected.strCategory || 'Patiekalas'}</div><h2>{selected.strMeal}</h2><div className="detail-actions"><button className="primary" disabled={!user || loading === 'save'} onClick={toggleSaved}>{saved.some((item) => item.meal_id === selected.idMeal) ? '❤️ Išsaugota' : '❤️ Išsaugoti'}</button>{!user && <span>Norint išsaugoti, prisijunkite.</span>}</div><div className="recipe-grid"><div><h3>Ingredientai</h3><ul className="ingredients">{selected.ingredients.map((item, index) => <li key={index}><span>{item.name}</span><small>{item.measure}</small></li>)}</ul></div><div><h3>Gaminimas</h3><p className="instructions">{selected.strInstructions}</p>{selected.strYoutube?.startsWith('https://') && <a href={selected.strYoutube} target="_blank" rel="noreferrer">Žiūrėti vaizdo įrašą ↗</a>}</div></div><section className="ai-box"><div className="eyebrow">GEMINI AI</div><h3>Pritaikykite sau</h3><p>Ko trūksta, ką norite pakeisti ar kokių mitybos poreikių turite?</p>{user && <p className="kitchen-context">Gemini taip pat gaus jūsų „Mano virtuvė“ sąrašą: <b>{kitchenItems.length ? kitchenItems.map((item) => item.name).join(', ') : 'sąrašas tuščias'}</b>.</p>}<form onSubmit={adapt}>
-  <div className="ai-options">
-    <label>Kiek laiko turiu?<select value={minutes} onChange={(e) => setMinutes(Number(e.target.value) as 15 | 30 | 60)}><option value={15}>15 min.</option><option value={30}>30 min.</option><option value={60}>60 min.</option></select></label>
-    <label>Kiek žmonių?<select value={people} onChange={(e) => setPeople(Number(e.target.value) as 1 | 2 | 4)}><option value={1}>1 žmogui</option><option value={2}>2 žmonėms</option><option value={4}>4 žmonėms</option></select></label>
-    <label>Ko noriu?<select value={goal} onChange={(e) => setGoal(e.target.value as 'simpler' | 'cheaper' | 'healthier' | 'similar')}><option value="simpler">Paprasčiau</option><option value="cheaper">Pigiau</option><option value="healthier">Sveikiau</option><option value="similar">Kuo panašiau į originalą</option></select></label>
-  </div>
-  <label className="sr-only" htmlFor="situation">Jūsų situacija</label><textarea id="situation" value={situation} onChange={(e) => setSituation(e.target.value)} maxLength={500} required placeholder="Pvz., neturiu pieno ir noriu vegetariško varianto"/><button className="primary" disabled={loading === 'adapt'}>{loading === 'adapt' ? 'Pritaikoma...' : '✨ Pritaikyti receptą'}</button></form>{adaptation && <div className="adaptation"><h4>Jums pritaikytas variantas</h4><p>{adaptation}</p>{user ? <button type="button" className="primary" onClick={saveAiRecipe} disabled={loading === 'saveAi' || aiSaved}>{aiSaved ? '💾 Išsaugota' : loading === 'saveAi' ? 'Saugoma...' : '💾 Išsaugoti pritaikytą receptą'}</button> : <p className="muted">Prisijunkite, kad išsaugotumėte pritaikytą receptą.</p>}</div>}</section></div></article> : <><div className="section-heading"><div><div className="eyebrow">ATRASKITE KĄ GAMINTI</div><h2>Receptų idėjos</h2></div><span>{meals.length ? `${meals.length} receptų` : 'Pradėkite nuo paieškos'}</span></div><div className="cards">{meals.map((meal) => <button className="card" key={meal.idMeal} onClick={() => openMeal(meal.idMeal)}><img src={meal.strMealThumb} alt="" loading="lazy"/><div className="card-text"><span>THEMEALDB RECEPTAS</span><strong>{meal.strMeal}</strong><span className="meal-id">Recepto ID: {meal.idMeal}</span><span className="card-link">Peržiūrėti receptą →</span></div></button>)}</div>{!meals.length && loading !== 'search' && <div className="empty">🥕<h3>Jūsų skanus atradimas prasideda čia</h3><p>Įveskite ingredientą aukščiau ir paspauskite „Ieškoti receptų“.</p></div>}</>}
-      </section>
-      <aside className="sidebar"><section className="panel"><div className="panel-icon">♡</div><h3>Mano virtuvė</h3>{configured ? user ? <><p className="muted">Prisijungta kaip <b>{user.email}</b></p><button className="text-button" onClick={signOut} disabled={loading === 'auth'}>Atsijungti →</button><div className="kitchen-list"><h4>Turimi produktai ({kitchenItems.length})</h4><form className="kitchen-form" onSubmit={addKitchenItem}><label className="sr-only" htmlFor="kitchen-item">Produkto pavadinimas</label><input id="kitchen-item" value={kitchenInput} onChange={(event) => setKitchenInput(event.target.value)} placeholder="Pvz., kiaušiniai" maxLength={60} disabled={loading === 'kitchen'}/><button type="submit" aria-label="Pridėti produktą" disabled={loading === 'kitchen' || !kitchenInput.trim()}>+</button></form>{kitchenItems.length ? <ul>{kitchenItems.map((item) => <li key={item.id}><span>{item.name}</span><button type="button" aria-label={`Pašalinti ${item.name}`} title="Pašalinti produktą" disabled={loading === 'kitchen'} onClick={() => removeKitchenItem(item.id)}>×</button></li>)}</ul> : <p className="muted">Įrašykite produktus, kuriuos turite namuose.</p>}</div><div className="saved-list"><h4>Mano receptai ({saved.length})</h4>{saved.length ? saved.map((item) => <div className="saved-item" key={item.meal_id}><button className="saved-open" onClick={() => openMeal(item.meal_id)}><img src={item.meal_thumb} alt=""/><span>{item.meal_name}</span></button><button className="saved-remove" title="Pašalinti receptą" aria-label={`Pašalinti ${item.meal_name}`} disabled={loading === 'save'} onClick={() => removeSaved(item.meal_id)}>×</button></div>) : <p className="muted">Kol kas nieko neišsaugojote.</p>}</div></> : <><p className="muted">Prisijunkite, pridėkite turimus produktus ir išsaugokite receptus.</p><div className="auth-tabs"><button className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>Prisijungti</button><button className={authMode === 'signup' ? 'active' : ''} onClick={() => setAuthMode('signup')}>Registruotis</button></div><form className="auth-form" onSubmit={submitAuth} noValidate><label>El. paštas<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required/></label><label>Slaptažodis<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={6} required/></label><button className="primary" disabled={loading === 'auth'}>{authMode === 'login' ? 'Prisijungti' : 'Sukurti paskyrą'}</button></form></> : <p className="muted">Norėdami naudoti paskyras, įrašykite Supabase duomenis į <code>.env.local</code>.</p>}</section><section className="tip"><span>✦ MAŽAS PATARIMAS</span><p>„Mano virtuvė“ produktai automatiškai perduodami Gemini, kai pritaikote pasirinktą receptą.</p></section></aside>
-    </div>
-    {user && <section className="ai-library" aria-labelledby="ai-library-title"><div className="section-heading"><div><div className="eyebrow">JŪSŲ IŠSAUGOTI VARIANTAI</div><h2 id="ai-library-title">Mano AI receptai</h2></div><span>{aiRecipes.length} receptų</span></div>{aiRecipes.length ? <div className="ai-recipe-list">{aiRecipes.map((recipe) => <details key={recipe.id}><summary><strong>{recipe.original_meal_name}</strong><small>{new Date(recipe.created_at).toLocaleDateString('lt-LT')}</small></summary><div className="ai-recipe-content"><h3>Jūsų prašymas</h3><p>{recipe.user_request}</p><h3>Pritaikytas receptas</h3><p>{recipe.ai_result}</p></div></details>)}</div> : <p className="muted">Kol kas neišsaugojote AI pritaikytų receptų.</p>}</section>}
+    {developerMode && <DeveloperPanel operation={lastOperation}/>} 
+    <SearchSection query={query} language={searchLanguage} mode={searchMode} translatedQuery={translatedQuery} loading={loading.search} onQuery={setQuery} onLanguage={changeLanguage} onMode={changeMode} onSubmit={search}/>
+    {notice && <NoticeBanner notice={notice} onFallback={searchFallback ? switchToEnglish : undefined}/>} 
+    <div className="content"><section className="main-column">
+      {selected ? <RecipeDetails meal={selected} user={user} kitchenItems={kitchenItems} saved={saved.some((item) => item.meal_id === selected.idMeal)} situation={situation} minutes={minutes} people={people} goal={goal} adaptation={adaptation} aiSaved={aiSaved} busyMealSave={loading.saved} busyAdapt={loading.adapt} busyAiSave={loading.saveAi} onBack={() => setSelected(null)} onToggleSaved={toggleSaved} onSituation={setSituation} onMinutes={setMinutes} onPeople={setPeople} onGoal={setGoal} onAdapt={adapt} onSaveAi={saveAiRecipe}/>
+        : <><div className="section-heading"><div><div className="eyebrow">ATRASKITE KĄ GAMINTI</div><h2>Receptų idėjos</h2></div><span>{meals.length ? `${meals.length} receptų` : 'Pradėkite nuo paieškos'}</span></div><div className="cards">{meals.map((meal) => <button className="card" disabled={loading.meal} key={meal.idMeal} onClick={() => openMeal(meal.idMeal)}><img src={meal.strMealThumb} alt="" loading="lazy"/><div className="card-text"><span>THEMEALDB RECEPTAS</span><strong>{meal.strMeal}</strong><span className="meal-id">Recepto ID: {meal.idMeal}</span><span className="card-link">Peržiūrėti receptą →</span></div></button>)}</div>{!meals.length && !loading.search && <div className="empty">🥕<h3>Jūsų skanus atradimas prasideda čia</h3><p>Įveskite ingredientą aukščiau ir paspauskite „Ieškoti receptų“.</p></div>}</>}
+    </section><KitchenSidebar configured={configured} user={user} email={email} password={password} authMode={authMode} kitchenInput={kitchenInput} kitchenItems={kitchenItems} saved={saved} busyAuth={loading.auth} busyKitchen={loading.kitchen} busySaved={loading.saved} onEmail={setEmail} onPassword={setPassword} onAuthMode={setAuthMode} onKitchenInput={setKitchenInput} onAuth={submitAuth} onSignOut={signOut} onAddKitchen={addKitchenItem} onRemoveKitchen={removeKitchenItem} onOpenMeal={openMeal} onRemoveSaved={removeSaved}/></div>
+    {user && <AiRecipeLibrary recipes={aiRecipes} deletingId={deletingAiId} onDelete={removeAiRecipe}/>} 
     <footer>Fridge Rescue · Receptai iš TheMealDB · Pritaikymas su Gemini</footer>
   </main>;
 }

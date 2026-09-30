@@ -1,15 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
-
-async function authorized(request: Request) {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-  const token = request.headers.get('authorization')?.replace(/^Bearer /, '');
-  if (!url || !key || !token) return null;
-  const client = createClient(url, key, { global: { headers: { Authorization: `Bearer ${token}` } }, auth: { persistSession: false } });
-  const { data, error } = await client.auth.getUser(token);
-  return error || !data.user ? null : { client, user: data.user };
-}
+import { authorizedSupabase } from '@/lib/supabase-server';
 
 const fields = 'id,meal_id,original_meal_name,user_request,ai_result,created_at';
 const goals: Record<string, string> = {
@@ -17,14 +7,14 @@ const goals: Record<string, string> = {
 };
 
 export async function GET(request: Request) {
-  const auth = await authorized(request);
+  const auth = await authorizedSupabase(request);
   if (!auth) return NextResponse.json({ error: 'Prisijunkite, kad matytumėte AI receptus.' }, { status: 401 });
   const { data, error } = await auth.client.from('saved_ai_recipes').select(fields).eq('user_id', auth.user.id).order('created_at', { ascending: false });
   return error ? NextResponse.json({ error: 'Nepavyko gauti AI receptų. Patikrinkite, ar paleistas ai_recipes.sql.' }, { status: 502 }) : NextResponse.json({ recipes: data });
 }
 
 export async function POST(request: Request) {
-  const auth = await authorized(request);
+  const auth = await authorizedSupabase(request);
   if (!auth) return NextResponse.json({ error: 'Prisijunkite, kad išsaugotumėte AI receptą.' }, { status: 401 });
   let body: { mealId?: unknown; mealName?: unknown; situation?: unknown; minutes?: unknown; people?: unknown; goal?: unknown; aiResult?: unknown };
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Neteisinga užklausa.' }, { status: 400 }); }
@@ -46,4 +36,17 @@ export async function POST(request: Request) {
     ai_result: body.aiResult.trim(),
   }).select(fields).single();
   return error ? NextResponse.json({ error: 'Nepavyko išsaugoti AI recepto. Patikrinkite, ar paleistas ai_recipes.sql.' }, { status: 502 }) : NextResponse.json({ recipe: data }, { status: 201 });
+}
+
+export async function DELETE(request: Request) {
+  const auth = await authorizedSupabase(request);
+  if (!auth) return NextResponse.json({ error: 'Prisijunkite, kad pašalintumėte AI receptą.' }, { status: 401 });
+  const id = new URL(request.url).searchParams.get('id');
+  if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+    return NextResponse.json({ error: 'Neteisingas AI recepto ID.' }, { status: 400 });
+  }
+  const { data, error } = await auth.client.from('saved_ai_recipes').delete().eq('user_id', auth.user.id).eq('id', id).select('id');
+  if (error) return NextResponse.json({ error: 'Nepavyko pašalinti AI recepto.' }, { status: 502 });
+  if (!data?.length) return NextResponse.json({ error: 'AI receptas nerastas tarp jūsų įrašų.' }, { status: 404 });
+  return NextResponse.json({ ok: true });
 }

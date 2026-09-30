@@ -20,8 +20,9 @@ Be Supabase ir Gemini raktų veiks TheMealDB paieška ir recepto peržiūra. Reg
 - Naršyklė valdo formas, receptų vaizdavimą ir Supabase Auth prisijungimą.
 - `app/api/meals` serverio maršrutas kreipiasi į TheMealDB: `filter.php?i=` ieško pagal vieną ingredientą, `search.php?s=` – pagal patiekalo pavadinimą. Angliška paieška siunčiama tiesiai į TheMealDB, o lietuvišką užklausą pirmiausia išverčia Gemini. Laukiant užklausos rodomas pranešimas; tuščia paieška, nerasti receptai ir užklausos klaidos apdorojami atskirai.
 - `app/api/saved` tikrina Supabase vartotojo prieigos žetoną ir išsaugo receptus. Lentelės RLS taisyklės riboja įrašus pagal vartotoją.
-- `app/api/adapt` serveryje kreipiasi į Gemini. `GEMINI_API_KEY` niekada neturi `NEXT_PUBLIC_` prefikso.
-- Po AI atsakymo prisijungęs vartotojas gali jį išsaugoti. `app/api/ai-recipes` tikrina sesiją ir saugo rezultatą `saved_ai_recipes` lentelėje; RLS leidžia matyti tik savo įrašus. Jie rodomi skiltyje „Mano AI receptai“.
+- `app/api/kitchen` saugo vartotojo turimus produktus. RLS leidžia gauti ir keisti tik savo „Mano virtuvė“ sąrašą.
+- `app/api/adapt` serveryje kreipiasi į Gemini. Jei vartotojas prisijungęs, serveris pats pasiima jo virtuvės produktus iš Supabase ir perduoda juos Gemini. `GEMINI_API_KEY` niekada neturi `NEXT_PUBLIC_` prefikso.
+- Po AI atsakymo prisijungęs vartotojas gali jį išsaugoti arba vėliau pašalinti. `app/api/ai-recipes` tikrina sesiją ir valdo `saved_ai_recipes` lentelę; RLS leidžia pasiekti tik savo įrašus.
 
 ## Pastaba
 

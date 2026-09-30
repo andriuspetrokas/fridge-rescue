@@ -1,0 +1,6 @@
+import type { SavedAiRecipe } from '@/lib/types';
+import { AiResponse } from './AiResponse';
+
+export function AiRecipeLibrary({ recipes, deletingId, onDelete }: { recipes: SavedAiRecipe[]; deletingId: string; onDelete: (id: string) => void }) {
+  return <section className="ai-library" aria-labelledby="ai-library-title"><div className="section-heading"><div><div className="eyebrow">JŪSŲ IŠSAUGOTI VARIANTAI</div><h2 id="ai-library-title">Mano AI receptai</h2></div><span>{recipes.length} receptų</span></div>{recipes.length ? <div className="ai-recipe-list">{recipes.map((recipe) => <details key={recipe.id}><summary><strong>{recipe.original_meal_name}</strong><small>{new Date(recipe.created_at).toLocaleDateString('lt-LT')}</small></summary><div className="ai-recipe-content"><h3>Jūsų prašymas</h3><p>{recipe.user_request}</p><h3>Pritaikytas receptas</h3><AiResponse text={recipe.ai_result}/><button type="button" className="danger-button" disabled={deletingId === recipe.id} onClick={() => onDelete(recipe.id)}>{deletingId === recipe.id ? 'Šalinama...' : 'Pašalinti AI receptą'}</button></div></details>)}</div> : <p className="muted">Kol kas neišsaugojote AI pritaikytų receptų.</p>}</section>;
+}

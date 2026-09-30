@@ -1,6 +1,7 @@
 import { ApiError, GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
 import { getMeal } from '@/lib/mealdb';
+import { authorizedSupabase } from '@/lib/supabase-server';
 
 const goalLabels = {
   simpler: 'paprasčiau',
@@ -12,7 +13,7 @@ const goalLabels = {
 export async function POST(request: Request) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return NextResponse.json({ error: 'Gemini API raktas dar nenustatytas.' }, { status: 503 });
-  let body: { mealId?: unknown; situation?: unknown; minutes?: unknown; people?: unknown; goal?: unknown; kitchenItems?: unknown };
+  let body: { mealId?: unknown; situation?: unknown; minutes?: unknown; people?: unknown; goal?: unknown };
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Neteisinga užklausa.' }, { status: 400 }); }
   if (typeof body.mealId !== 'string' || !/^\d+$/.test(body.mealId) || typeof body.situation !== 'string' || !body.situation.trim() || body.situation.length > 500) {
     return NextResponse.json({ error: 'Pasirinkite receptą ir trumpai aprašykite savo situaciją.' }, { status: 400 });
@@ -20,12 +21,18 @@ export async function POST(request: Request) {
   if (typeof body.minutes !== 'number' || ![15, 30, 60].includes(body.minutes) || typeof body.people !== 'number' || ![1, 2, 4].includes(body.people) || typeof body.goal !== 'string' || !Object.hasOwn(goalLabels, body.goal)) {
     return NextResponse.json({ error: 'Pasirinkite laiką, žmonių skaičių ir pageidaujamą kryptį.' }, { status: 400 });
   }
-  if (!Array.isArray(body.kitchenItems) || body.kitchenItems.length > 100 || !body.kitchenItems.every((item) => typeof item === 'string' && item.trim() && item.length <= 60)) {
-    return NextResponse.json({ error: 'Neteisingas „Mano virtuvė“ produktų sąrašas.' }, { status: 400 });
-  }
   try {
     const meal = await getMeal(body.mealId);
     if (!meal) return NextResponse.json({ error: 'Receptas nerastas.' }, { status: 404 });
+    const hasAuthorization = request.headers.has('authorization');
+    const auth = hasAuthorization ? await authorizedSupabase(request) : null;
+    if (hasAuthorization && !auth) return NextResponse.json({ error: 'Prisijungimo sesija nebegalioja. Prisijunkite iš naujo.' }, { status: 401 });
+    let kitchenItems: string[] = [];
+    if (auth) {
+      const { data, error } = await auth.client.from('kitchen_items').select('name').eq('user_id', auth.user.id).order('created_at');
+      if (error) return NextResponse.json({ error: 'Nepavyko gauti „Mano virtuvė“ produktų.' }, { status: 502 });
+      kitchenItems = (data ?? []).map((item) => item.name);
+    }
     // Explicit key wins over GOOGLE_API_KEY inherited from the terminal.
     const ai = new GoogleGenAI({ apiKey: key });
     const prompt = `Esi praktiškas receptų pagalbininkas. Atsakyk lietuviškai ir pritaikyk originalų receptą pagal VISAS žemiau pateiktas vartotojo sąlygas.
@@ -35,7 +42,7 @@ Vartotojo sąlygos:
 - Žmonių skaičius: ${body.people}.
 - Pageidaujama kryptis: ${goalLabels[body.goal as keyof typeof goalLabels]}.
 - Papildomas prašymas: ${body.situation.trim()}
-- Vartotojo turimi „Mano virtuvė“ produktai: ${body.kitchenItems.length ? body.kitchenItems.map((item) => String(item).trim()).join(', ') : 'sąrašas tuščias'}
+- Vartotojo turimi „Mano virtuvė“ produktai: ${kitchenItems.length ? kitchenItems.join(', ') : 'sąrašas tuščias'}
 
 Originalus receptas: ${meal.strMeal}
 Originalūs ingredientai: ${meal.ingredients.map((i) => `${i.measure} ${i.name}`).join(', ')}
